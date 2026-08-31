@@ -1,0 +1,96 @@
+name: LETSGO cooldown
+
+on:
+  schedule:
+    # FIX (Timing): frueher & entzerrt. 05:17 UTC = 07:17 CEST.
+    # Die Entscheidung laeuft jetzt auf US-Kursen (^SP500TR, TIP); deren Vortages-
+    # Close (~22:00 CET) liegt bei Yahoo laengst vor. Ungerade Minute (17) senkt die
+    # GitHub-Actions-Warteschlange. Kein Xetra-Lag mehr -> kein Nachmittags-Drift.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Verhindert, dass sich zwei Laeufe (z.B. manueller Dispatch + Zeitplan, oder ein
+# langsamer Retry-Lauf und der naechste Tag) ueberlappen und die History-Datei
+# gleichzeitig fortschreiben/pushen -> sonst Merge-Konflikte / doppelte Zeilen.
+concurrency:
+  group: letsgo-signal
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      # WhatsApp (optional, CallMeBot) — nur bei echtem Allokationswechsel:
+      WHATSAPP_PHONE: ${{ secrets.WHATSAPP_PHONE }}
+      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas yahooquery numpy
+
+      - name: Run first attempt
+        run: |
+          rm -f message.txt
+          python3 main.py
+
+      # FIX (Timing): kurze Sicherheits-Retries (2 x 30 Min) statt 3 x 90 Min.
+      # Frische ist jetzt DATUMSBASIERT (needsRetry nur wenn US-Close noch nicht
+      # vom letzten Handelstag). Bei US-Daten praktisch nie noetig.
+      - name: Retry loop (safety)
+        run: |
+          for attempt in 1 2; do
+            NEEDS_RETRY=$(python3 - <<'PY'
+          import json, os
+          if not os.path.exists("letsgo_status.json"):
+              print("false")
+          else:
+              with open("letsgo_status.json") as f:
+                  print("true" if json.load(f).get("needsRetry") else "false")
+          PY
+          )
+            echo "Attempt $attempt: needsRetry=$NEEDS_RETRY"
+            if [ "$NEEDS_RETRY" != "true" ]; then
+              echo "Daten frisch — Retry-Schleife beendet."
+              break
+            fi
+            echo "Warte 30 Min vor erneutem Versuch..."
+            sleep 1800
+            rm -f message.txt
+            python3 main.py
+          done
+
+      - name: Send Discord notification
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL secret fehlt."; exit 1
+          fi
+          if [ ! -f message.txt ]; then
+            echo "Keine message.txt vorhanden."; exit 0
+          fi
+          MESSAGE=$(cat message.txt)
+          if [ -z "$MESSAGE" ]; then
+            echo "message.txt ist leer."; exit 0
+          fi
+          MESSAGE="${MESSAGE:0:1900}"
+          jq -n --arg content "$MESSAGE" '{content: $content}' > payload.json
+          # --fail-with-body: Discord-Fehler (falscher/geloeschter Webhook) laesst
+          # den Schritt jetzt sichtbar rot werden, statt still "erfolgreich" zu sein.
+          curl --fail-with-body -sS -X POST -H "Content-Type: application/json" \
+               -d @payload.json "$DISCORD_WEBHOOK_URL"
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git diff --cached --quiet && echo "Nichts zu committen" && exit 0
+          git commit -m "Update indicator data [ci skip]"
+          git pull --rebase origin main
+          git push origin main
