@@ -1,20 +1,23 @@
 """
 SpyTips-Cool — Finale Strategie C  (3x-S&P500 70% + 1x-BTC 30%)
 
-Entscheidung ausschliesslich auf ZUVERLAESSIGEN USD-1x-Kursen:
-    S&P 500 Total Return  ->  ^SP500TR   (SMA150)
-    US-TIPS               ->  TIP        (SMA200)
+Entscheidung ausschliesslich auf ZUVERLAESSIGEN USD-1x-Kursen (SMA-Laengen kommen
+aus constants.py -> SPY_SMA / TIPS_SMA, aktuell beide 160):
+    S&P 500 Total Return  ->  ^SP500TR   (> SMA SPY_SMA ?)
+    US-TIPS               ->  TIP        (> SMA TIPS_SMA ?)
+    MARKT  <=>  S&P 500 > SMA  UND  US-TIPS > SMA ;  sonst CASH.
 
 Warum USD statt EUR-hedged?
-  - Backtest: USD-Signal ist signalgleich zum EUR-hedged-Signal (Sharpe 0,99),
+  - Backtest: USD-Signal ist signalgleich zum EUR-hedged-Signal,
     aber EUR-unhedged zerstoert v.a. das ruhige TIPS-Signal.
   - Praxis: die frueher genutzten .DE-EUR-hedged-Ticker (IBCF.DE/IBC5.DE) haengen
     auf Yahoo einen Handelstag hinterher (Xetra-Lag) -> falsches/verspaetetes
     Signal + Dauer-Retries. ^SP500TR und TIP (US-Close ~22:00 CET) liegen bei
     Yahoo frueh und zuverlaessig vor.
 
-BTC ist KEIN Signal (Variante C haelt BTC im Markt fix mit 40%). BTC wird nur
-optional als Info-Kurs angezeigt und blockiert die Entscheidung nie.
+BTC ist KEIN Signal (Variante C haelt BTC im Markt fix mit BTC_WEIGHT, aktuell
+30%). BTC wird nur optional als Info-Kurs angezeigt und blockiert die
+Entscheidung nie. Alle Kern-Parameter stehen zentral in constants.py.
 """
 
 import os
@@ -122,16 +125,38 @@ def _align_two(spy_close, tips_close):
     }
 
 
+def _berlin_yesterday():
+    return pd.Timestamp.now(tz="Europe/Berlin").date() - pd.Timedelta(days=1)
+
+
 def _last_weekday_on_or_before(date_value):
     d = pd.Timestamp(date_value)
     while d.weekday() >= 5:      # Sa/So zurueck auf Fr
         d = d - pd.Timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
+    return d.date()
 
 
-def _expected_fresh_date():
-    berlin_yesterday = pd.Timestamp.now(tz="Europe/Berlin").date() - pd.Timedelta(days=1)
-    return _last_weekday_on_or_before(berlin_yesterday)
+def _expected_session_date():
+    """
+    Datum der ZULETZT erwarteten US-Handelssitzung (deren Schluss jetzt vorliegen
+    sollte) = letzter NYSE-Handelstag <= gestern (Berlin). Der heutige US-Schluss
+    liegt zur Bot-Laufzeit (frueh morgens) noch nicht vor, daher 'gestern'.
+
+    Nutzt den exakten NYSE-Kalender (pandas_market_calendars). Faellt er aus
+    (Lib fehlt o. ae.), Fallback = letzter Wochentag (nur Wochenende, ohne
+    Feiertage) -> dann kann an US-Feiertagen wieder eine harmlose Falschmeldung
+    entstehen, aber der Bot crasht NIE.
+    """
+    yday = _berlin_yesterday()
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("XNYS")
+        sched = nyse.schedule(start_date=(yday - pd.Timedelta(days=20)), end_date=yday)
+        if len(sched) > 0:
+            return sched.index[-1].date()
+    except Exception as e:
+        print(f"NYSE-Kalender nicht verfuegbar (Fallback Wochentag): {e}")
+    return _last_weekday_on_or_before(yday)
 
 
 def _date_de(date_string):
@@ -143,28 +168,24 @@ def _date_de(date_string):
 
 def _build_signal_status(key, name, ticker, close, sma_rolling, diff):
     """
-    FIX: Frische ist jetzt rein DATUMSBASIERT (currentDate >= erwarteter letzter
-    Handelstag). Die fruehere 'valueChanged'-Bedingung wurde ENTFERNT — sie
-    feuerte an ruhigen Tagen faelschlich Dauer-Retries aus.
+    Frische KALENDER-BASIERT: 'fresh' = der letzte verfuegbare Schluss ist NICHT
+    aelter als die zuletzt erwartete NYSE-Handelssitzung. Fehlt ein echter
+    Handelstag (Yahoo-Lag/Bug), ist fresh=False -> Retry + echte Warnung.
+    Wochenende/Feiertag machen die Daten NICHT 'stale' (dann gibt es korrekt
+    keine neue Sitzung, und der letzte Close IST die erwartete Sitzung).
     """
-    expected_date = _expected_fresh_date()
+    expected_date = _expected_session_date()          # date
+    last_dt = close.index[-1].date()
     current_date = close.index[-1].strftime("%Y-%m-%d")
-    # FIX (Feiertage): An US-Boersenfeiertagen (Wochentag ohne Handel) ist der
-    # letzte echte Handelstag aelter als 'expected_date'. Ohne Toleranz wuerde
-    # needsRetry=True gesetzt -> 60 Min Leerlauf-Retry + faelschliche stale-Warnung,
-    # obwohl die Daten korrekt sind. Daten gelten daher auch als frisch, wenn der
-    # letzte Close hoechstens 4 Kalendertage alt ist (Wochenende + 1 Feiertag).
-    berlin_yesterday = pd.Timestamp.now(tz="Europe/Berlin").date() - pd.Timedelta(days=1)
-    recent = (berlin_yesterday - close.index[-1].date()).days <= 4
-    plausible = (current_date >= expected_date) or recent
+    fresh = last_dt >= expected_date
     return {
         "key": key, "name": name, "ticker": ticker,
         "currentDate": current_date,
-        "expectedDate": expected_date,
+        "expectedDate": expected_date.strftime("%Y-%m-%d"),
         "current": float(close.iloc[-1]),
         "sma": float(sma_rolling.iloc[-1]),
         "diffPct": float(diff.iloc[-1] * 100),
-        "fresh": bool(plausible),
+        "fresh": bool(fresh),
     }
 
 
@@ -235,14 +256,14 @@ def _build_message(allocation, cooldown, spy_st, tips_st, btc_info, data_stale,
         f"({cooldown} Cooldown-Tage verbleibend)",
     ]
 
-    # ---- Hinweis an handelsfreien Tagen (Wochenende/Feiertag) ----
-    # Zeigt sich automatisch, wenn der letzte verfuegbare US-Schluss >= 2
-    # Kalendertage alt ist (also seit dem letzten Handelstag kein neuer dazukam).
-    # Alle anderen Infos bleiben unveraendert erhalten.
+    # ---- Hinweis an ECHT handelsfreien Tagen (Wochenende/Feiertag) ----
+    # Erscheint nur, wenn die Daten NICHT wirklich veraltet sind (data_stale=False,
+    # d.h. der NYSE-Kalender bestaetigt: es fehlt kein echter Handelstag) UND der
+    # letzte Schluss aelter als gestern ist (also die letzten Tage handelsfrei waren).
+    # Bei echtem Datenfehler (data_stale=True) kommt stattdessen die ⚠️-Warnung unten.
     try:
-        berlin_today = pd.Timestamp.now(tz="Europe/Berlin").date()
         last_dt = pd.to_datetime(spy_st["currentDate"]).date()
-        if (berlin_today - last_dt).days >= 2:
+        if (not data_stale) and last_dt < _berlin_yesterday():
             lines.append(f"ℹ️ Kein neuer US-Handelstag seit {last_dt.strftime('%d.%m.')} "
                          f"(Wochenende/Feiertag)")
     except Exception:
@@ -264,8 +285,9 @@ def _build_message(allocation, cooldown, spy_st, tips_st, btc_info, data_stale,
         lines += ["", f"BTC (nur Info): {btc_info['price']:,.0f} USD   "
                       f"Stand: {_date_de(btc_info['date'])}"]
     if data_stale:
-        lines += ["", "⚠️ Hinweis: Kursdaten evtl. noch nicht vom letzten Handelstag "
-                      "— Signal wird beim naechsten Lauf bestaetigt."]
+        lines += ["", "⚠️ Kursdaten evtl. veraltet — ein erwarteter US-Handelstag fehlt. "
+                      "Der Bot versucht es automatisch erneut; bitte pruefen, falls die "
+                      "Warnung bestehen bleibt."]
     # ---- Backtest-Optimum (IMMER, ganz unten) ----
     lines += ["", "Backtest-Optimum (BTC-Anteil):",
               "• Gesamt-Sortino: 30–40% BTC",
