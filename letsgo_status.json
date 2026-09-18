@@ -1,33 +1,33 @@
 {
-  "updated": "2026-09-17T12:03:27.910931+02:00",
+  "updated": "2026-09-18T11:50:41.209454+02:00",
   "strategy": "C: 70% 3xSPY + 30% BTC (USD-Signale, SPY-SMA160/TIPS-SMA160, Freeze15)",
   "signals": {
     "spy_usd": {
       "key": "spy_usd",
       "name": "S&P 500 (USD)",
       "ticker": "^SP500TR",
-      "currentDate": "2026-09-16",
-      "expectedDate": "2026-09-16",
-      "current": 16932.470703125,
-      "sma": 16191.35164794922,
-      "diffPct": 4.57725254376555,
+      "currentDate": "2026-09-17",
+      "expectedDate": "2026-09-17",
+      "current": 17125.689453125,
+      "sma": 16201.345391845703,
+      "diffPct": 5.705353715528638,
       "fresh": true
     },
     "tips_usd": {
       "key": "tips_usd",
       "name": "US-TIPS (USD)",
       "ticker": "TIP",
-      "currentDate": "2026-09-16",
-      "expectedDate": "2026-09-16",
-      "current": 105.38999938964844,
-      "sma": 107.31323137283326,
-      "diffPct": -1.7921666867928212,
+      "currentDate": "2026-09-17",
+      "expectedDate": "2026-09-17",
+      "current": 105.70999908447266,
+      "sma": 107.30649290084838,
+      "diffPct": -1.487788644673061,
       "fresh": true
     }
   },
   "btc_info": {
-    "price": 76150.3203125,
-    "date": "2026-09-16"
+    "price": 76403.7734375,
+    "date": "2026-09-17"
   },
   "needsRetry": false
 }
