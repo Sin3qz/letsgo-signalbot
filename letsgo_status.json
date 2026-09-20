@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-19T11:34:56.865296+02:00",
+  "updated": "2026-09-20T11:51:28.672495+02:00",
   "strategy": "C: 70% 3xSPY + 30% BTC (USD-Signale, SPY-SMA160/TIPS-SMA160, Freeze15)",
   "signals": {
     "spy_usd": {
@@ -20,14 +20,14 @@
       "currentDate": "2026-09-18",
       "expectedDate": "2026-09-18",
       "current": 105.2699966430664,
-      "sma": 107.2965217590332,
-      "diffPct": -1.8887146412052074,
+      "sma": 107.2965220451355,
+      "diffPct": -1.8887149028154113,
       "fresh": true
     }
   },
   "btc_info": {
-    "price": 80901.4609375,
-    "date": "2026-09-18"
+    "price": 81233.6796875,
+    "date": "2026-09-19"
   },
   "needsRetry": false
 }
