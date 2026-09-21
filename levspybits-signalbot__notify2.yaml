@@ -1,0 +1,91 @@
+name: LETSGO cooldown
+
+on:
+  schedule:
+    # 05:17 UTC = 07:17 CEST. Entscheidung auf US-Kursen (^SP500TR, TIP);
+    # deren Vortages-Close liegt bei Yahoo laengst vor. Ungerade Minute (17)
+    # senkt die GitHub-Actions-Warteschlange.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: letsgo-signal
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+    steps:
+      # PAT-Push (Loesung A): Token beim Checkout hinterlegen -> Push in DEINEM
+      # Namen -> haelt den Cron dauerhaft aktiv (kein 60-Tage-Timeout).
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_PUSH }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas yahooquery numpy pandas_market_calendars
+
+      - name: Run first attempt
+        run: |
+          rm -f message.txt
+          python3 main.py
+
+      - name: Retry loop (safety)
+        run: |
+          for attempt in 1 2; do
+            NEEDS_RETRY=$(python3 - <<'PY'
+          import json, os
+          if not os.path.exists("letsgo_status.json"):
+              print("false")
+          else:
+              with open("letsgo_status.json") as f:
+                  print("true" if json.load(f).get("needsRetry") else "false")
+          PY
+          )
+            echo "Attempt $attempt: needsRetry=$NEEDS_RETRY"
+            if [ "$NEEDS_RETRY" != "true" ]; then
+              echo "Daten frisch — Retry-Schleife beendet."
+              break
+            fi
+            echo "Warte 30 Min vor erneutem Versuch..."
+            sleep 1800
+            rm -f message.txt
+            python3 main.py
+          done
+
+      - name: Send Discord notification
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL secret fehlt."; exit 1
+          fi
+          if [ ! -f message.txt ]; then
+            echo "Keine message.txt vorhanden."; exit 0
+          fi
+          MESSAGE=$(cat message.txt)
+          if [ -z "$MESSAGE" ]; then
+            echo "message.txt ist leer."; exit 0
+          fi
+          MESSAGE="${MESSAGE:0:1900}"
+          jq -n --arg content "$MESSAGE" '{content: $content}' > payload.json
+          curl --fail-with-body -sS -X POST -H "Content-Type: application/json" \
+               -d @payload.json "$DISCORD_WEBHOOK_URL"
+
+      - name: Commit and push changes
+        run: |
+          # Autor = DU (Sin3qz) statt github-actions[bot] -> zaehlt als Nutzer-Aktivitaet.
+          git config --global user.name "Sin3qz"
+          git config --global user.email "Sin3qz@users.noreply.github.com"
+          git add .
+          git diff --cached --quiet && echo "Nichts zu committen" && exit 0
+          git commit -m "Update indicator data [ci skip]"
+          git pull --rebase origin main
+          git push origin main
